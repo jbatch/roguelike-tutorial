@@ -1,4 +1,4 @@
-use rltk::{GameState, Rltk, RGB};
+use rltk::{GameState, Point, Rltk, RGB};
 use specs::prelude::*;
 
 mod player;
@@ -9,6 +9,8 @@ mod map;
 pub use map::*;
 mod rect;
 pub use rect::*;
+mod visability_system;
+pub use visability_system::*;
 
 pub struct State {
     ecs: World,
@@ -21,8 +23,7 @@ impl GameState for State {
         player_input(self, ctx);
         let positions = self.ecs.read_storage::<Position>();
         let renderables = self.ecs.read_storage::<Renderable>();
-        let map = self.ecs.fetch::<Vec<TileType>>();
-        draw_map(&map, ctx);
+        draw_map(&self.ecs, ctx);
 
         for (pos, render) in (&positions, &renderables).join() {
             ctx.set(pos.x, pos.y, render.fg, render.bg, render.glyph);
@@ -32,7 +33,49 @@ impl GameState for State {
 
 impl State {
     fn run_systems(&mut self) {
+        let mut vis = VisabilitySystem {};
+        vis.run_now(&self.ecs);
         self.ecs.maintain();
+    }
+}
+
+pub fn draw_map(ecs: &World, ctx: &mut Rltk) {
+    let mut viewsheds = ecs.write_storage::<Viewshed>();
+    let mut players = ecs.write_storage::<Player>();
+    let map = ecs.fetch::<Map>();
+
+    for (_player, viewshed) in (&mut players, &mut viewsheds).join() {
+        let mut y = 0;
+        let mut x = 0;
+
+        for (idx, tile) in map.tiles.iter().enumerate() {
+            // Render a tile depending on the tile type
+            if map.revealed_tiles[idx] {
+                let glyph;
+                let mut fg;
+                match tile {
+                    TileType::Floor => {
+                        glyph = rltk::to_cp437('.');
+                        fg = RGB::from_f32(0.0, 0.5, 0.5);
+                    }
+                    TileType::Wall => {
+                        glyph = rltk::to_cp437('#');
+                        fg = RGB::from_f32(0., 1.0, 0.);
+                    }
+                }
+                if !map.visible_tiles[idx] {
+                    fg = fg.to_greyscale();
+                }
+                ctx.set(x, y, fg, RGB::from_f32(0., 0., 0.), glyph);
+            }
+
+            // Move the coordinates
+            x += 1;
+            if x > 79 {
+                x = 0;
+                y += 1;
+            }
+        }
     }
 }
 
@@ -46,9 +89,10 @@ fn main() -> rltk::BError {
     gs.ecs.register::<Position>();
     gs.ecs.register::<Renderable>();
     gs.ecs.register::<Player>();
-    let (rooms, map) = new_map_rooms_and_corridors();
+    gs.ecs.register::<Viewshed>();
+    let map = Map::new_map_rooms_and_corridors();
+    let (player_x, player_y) = map.rooms[0].center();
     gs.ecs.insert(map);
-    let (player_x, player_y) = rooms[0].center();
     gs.ecs
         .create_entity()
         .with(Position {
@@ -61,6 +105,11 @@ fn main() -> rltk::BError {
             bg: RGB::named(rltk::BLACK),
         })
         .with(Player {})
+        .with(Viewshed {
+            visible_tiles: Vec::new(),
+            range: 8,
+            dirty: true,
+        })
         .build();
 
     rltk::main_loop(context, gs)
